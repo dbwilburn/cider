@@ -1,44 +1,44 @@
-## CIDer v1
-## Usage: python CIDer.py input.dlib
+## CIDer v1.0
+## Usage: python CIDer.py (--nce nce) input.dlib (--output output)
 ## Returns input_CIDer.dlib
 
 import numpy as np, pandas as pd
 import sqlite3
+import argparse
 import os, pickle, sys, zlib, struct, re, itertools
 from scipy import interpolate
 
+def parse_args(args):
+    parser = argparse.ArgumentParser()
+    parser.add_argument('input_file', 
+                        type=str, 
+                        help='path to input dlib')
+    parser.add_argument('--output',
+                        type=str,
+                        help='path to output dlib',
+                        default='CIDer_outpt.dlib')
+    parser.add_argument('--nce',
+                        type=int,
+                        help='NCE value',
+                        default=30)
+    return parser.parse_args(args)
+    
+    
+    
 
 ## Bring in model components
 charge_pairs = [(2,1), (2,2), (3,1), (3,2)]
 weights_dir = str(__file__).replace('CIDer.py','weights')
+config = parse_args(sys.argv[1:])
 
-y_mz_spline_data = pickle.load(open(os.path.join(weights_dir,'y_mz_spline.pkl'),'rb'))
+weights_by_nce = pickle.load(open(os.path.join(weights_dir,'nce_weights.pkl'),'rb'))
+weights = weights_by_nce[config.nce]
 
-y_mz_spline_by_cp = dict( [(charge_pairs[i], 
-                            interpolate.interp1d(*y_mz_spline_data[0],y_mz_spline_data[i+1])) 
-                           for i in range(4)] )
-y_pn_dict = pickle.load(open(os.path.join(weights_dir,'y_pn.pkl'),'rb'))
-y_Rcount_by_yn_dict = pickle.load(open(os.path.join(weights_dir,'y_yRcount_by_yn.pkl'),'rb'))
-y_Kcount_by_yn_dict = pickle.load(open(os.path.join(weights_dir,'y_yKcount_by_yn.pkl'),'rb'))
-y_Hcount_by_yn_dict = pickle.load(open(os.path.join(weights_dir,'y_yHcount_by_yn.pkl'),'rb'))
-y_bRcount_by_yn_dict = pickle.load(open(os.path.join(weights_dir,'y_bRcount_by_yn.pkl'),'rb'))
-y_bKcount_by_yn_dict = pickle.load(open(os.path.join(weights_dir,'y_bKcount_by_yn.pkl'),'rb'))
-y_bHcount_by_yn_dict = pickle.load(open(os.path.join(weights_dir,'y_bHcount_by_yn.pkl'),'rb'))
-y_side_weights = pickle.load(open(os.path.join(weights_dir,'y_side_weights.pkl'),'rb'))
-b_mz_spline_data = pickle.load(open(os.path.join(weights_dir,'b_mz_spline.pkl'),'rb'))
-b_mz_spline_by_cp = dict( [(charge_pairs[i], 
-                             interpolate.interp1d(*b_mz_spline_data[0],b_mz_spline_data[i+1])) 
-                            for i in range(4)] )
-b_pn_dict = pickle.load(open(os.path.join(weights_dir,'y_pn.pkl'),'rb'))
-b_Rcount_by_bn_dict = pickle.load(open(os.path.join(weights_dir,'b_bRcount_by_bn.pkl'),'rb'))
-b_Kcount_by_bn_dict = pickle.load(open(os.path.join(weights_dir,'b_bKcount_by_bn.pkl'),'rb'))
-b_Hcount_by_bn_dict = pickle.load(open(os.path.join(weights_dir,'b_bHcount_by_bn.pkl'),'rb'))
-b_yRcount_by_bn_dict = pickle.load(open(os.path.join(weights_dir,'b_yRcount_by_bn.pkl'),'rb'))
-b_yKcount_by_bn_dict = pickle.load(open(os.path.join(weights_dir,'b_yKcount_by_bn.pkl'),'rb'))
-b_yHcount_by_bn_dict = pickle.load(open(os.path.join(weights_dir,'b_yHcount_by_bn.pkl'),'rb'))
-b_side_weights = pickle.load(open(os.path.join(weights_dir,'b_side_weights.pkl'),'rb'))
-
-
+for ion_type in ['y','b']:
+    weights[ion_type+'_mz_spline_curve'] = dict(zip( charge_pairs,
+                                                     [interpolate.interp1d(weights[ion_type+'_mz_spline'][0], 
+                                                                           weights[ion_type+'_mz_spline'][i]) 
+                                                      for i in range(1,5)] ))
 
 ## Peptide classification functions
 def mass_calc( seq, initial_mass = 18.0105647, mods={}, mod_offset=0 ):
@@ -132,9 +132,6 @@ def fragment_ion_generator(mod_seq, charge=2, main_only=False):
                 ab_seq = seq[:i]
                 a_mass = mass_calc( ab_seq, initial_mass = -27.99491463, mods = mods )
                 a_mz = (a_mass+z*p_mass)/z
-                #print(a_mz)
-                #print(np.any(np.isclose(a_mz, [x[1] for x in fragments])))
-                #if a_mz > 0:
                 if not np.any( np.isclose(a_mz, [x[1] for x in fragments]) ):
                     fragments.append( ( 'a'+str(i)+'_'+str(z)+'+', #name
                                         a_mz,
@@ -149,7 +146,6 @@ def fragment_ion_generator(mod_seq, charge=2, main_only=False):
                                         mods = mods, mod_offset = i )
                     i_mz = (i_mass+z*p_mass)/z
                     if not np.any( np.isclose(i_mz, [x[1] for x in fragments]) ):
-                        #print('i'+str(i+1)+'-'+str(j)+'_'+str(z)+'+')
                         fragments.append( ( 'i'+str(i+1)+'-'+str(j)+'_'+str(z)+'+', #name
                                             i_mz,
                                             z,
@@ -163,30 +159,30 @@ def fragment_ion_generator(mod_seq, charge=2, main_only=False):
 
 def y_fitter(row, labels, p_z, y_z):
     values = dict(zip(labels,row))
-    y_fit = y_mz_spline_by_cp[(p_z,y_z)]( (values['y_mz']+(y_z-1)*1.00727646688)/y_z ) +\
-            y_pn_dict[p_z][y_z][values['peplength']] +\
-            y_Rcount_by_yn_dict[p_z][y_z][values['y_R_count']][values['y_number']] +\
-            y_Kcount_by_yn_dict[p_z][y_z][values['y_K_count']][values['y_number']] +\
-            y_Hcount_by_yn_dict[p_z][y_z][values['y_H_count']][values['y_number']] +\
-            y_bRcount_by_yn_dict[p_z][y_z][values['b_R_count']][values['b_number']] +\
-            y_bKcount_by_yn_dict[p_z][y_z][values['b_K_count']][values['b_number']] +\
-            y_bHcount_by_yn_dict[p_z][y_z][values['b_H_count']][values['b_number']] +\
-            y_side_weights['left'][p_z][y_z][values['left_residue']] +\
-            y_side_weights['right'][p_z][y_z][values['right_residue']]
+    y_fit = weights['y_mz_spline_curve'][(p_z,y_z)]( (values['y_mz']+(y_z-1)*1.00727646688)/y_z ) +\
+            weights['y_pn'][p_z][y_z][values['peplength']] +\
+            weights['y_yRcount_by_yn'][p_z][y_z][values['y_R_count']][values['y_number']] +\
+            weights['y_yKcount_by_yn'][p_z][y_z][values['y_K_count']][values['y_number']] +\
+            weights['y_yHcount_by_yn'][p_z][y_z][values['y_H_count']][values['y_number']] +\
+            weights['y_bRcount_by_yn'][p_z][y_z][values['b_R_count']][values['b_number']] +\
+            weights['y_bKcount_by_yn'][p_z][y_z][values['b_K_count']][values['b_number']] +\
+            weights['y_bHcount_by_yn'][p_z][y_z][values['b_H_count']][values['b_number']] +\
+            weights['y_side_weights']['left'][p_z][y_z][values['left_residue']] +\
+            weights['y_side_weights']['right'][p_z][y_z][values['right_residue']]
     return np.power(2, float(y_fit))
 
 def b_fitter(row, labels, p_z, y_z, b_z):
     values = dict(zip(labels,row))
-    b_fit = b_mz_spline_by_cp[(p_z,y_z)]((values['b_mz']+(b_z-1)*1.00727646688)/b_z) +\
-            b_pn_dict[p_z][y_z][values['peplength']] +\
-            b_Rcount_by_bn_dict[p_z][y_z][values['b_R_count']][values['b_number']] +\
-            b_Kcount_by_bn_dict[p_z][y_z][values['b_K_count']][values['b_number']] +\
-            b_Hcount_by_bn_dict[p_z][y_z][values['b_H_count']][values['b_number']] +\
-            b_yRcount_by_bn_dict[p_z][y_z][values['y_R_count']][values['b_number']] +\
-            b_yKcount_by_bn_dict[p_z][y_z][values['y_K_count']][values['b_number']] +\
-            b_yHcount_by_bn_dict[p_z][y_z][values['y_H_count']][values['b_number']] +\
-            b_side_weights['left'][p_z][y_z][values['left_residue']] +\
-            b_side_weights['right'][p_z][y_z][values['right_residue']]
+    b_fit = weights['b_mz_spline_curve'][(p_z,y_z)]((values['b_mz']+(b_z-1)*1.00727646688)/b_z) +\
+            weights['b_pn'][p_z][y_z][values['peplength']] +\
+            weights['b_bRcount_by_bn'][p_z][y_z][values['b_R_count']][values['b_number']] +\
+            weights['b_bKcount_by_bn'][p_z][y_z][values['b_K_count']][values['b_number']] +\
+            weights['b_bHcount_by_bn'][p_z][y_z][values['b_H_count']][values['b_number']] +\
+            weights['b_yRcount_by_bn'][p_z][y_z][values['y_R_count']][values['b_number']] +\
+            weights['b_yKcount_by_bn'][p_z][y_z][values['y_K_count']][values['b_number']] +\
+            weights['b_yHcount_by_bn'][p_z][y_z][values['y_H_count']][values['b_number']] +\
+            weights['b_side_weights']['left'][p_z][y_z][values['left_residue']] +\
+            weights['b_side_weights']['right'][p_z][y_z][values['right_residue']]
     return np.power(2,float(b_fit))
 
 
@@ -286,28 +282,29 @@ def cider_predict(row, labels):
         peptide['IntensityArray'] = zlib.compress(pred_ints)
         peptide['IntensityEncodedLength'] = len(model_fits['int']) * 4
 
-        return list(peptide.values())[1:]
+        return list(peptide.values())
 
 
 ## Read in dlib
-input_dlib = sys.argv[1]
+input_dlib = config.input_file
 con = sqlite3.connect(input_dlib)
 df = pd.read_sql_query('SELECT * from entries', con)
 con.close()
 
 ## Loop over each row, extract spectra, annotate, and apply model
 new_fit = []
-labels = ['index']+list(df.columns)
-for row in df.itertuples():
+labels = list(df.columns)
+for row in df.itertuples(index=False):
     new_row = cider_predict(row, labels)
     if new_row != 0:    new_fit.append(new_row)
-new_df = pd.DataFrame(new_fit, columns=df.columns)
+new_df = pd.DataFrame(new_fit, columns=labels)
 
-output_dlib = sys.argv[1][:-5]+'_CIDer.dlib'
+output_dlib = config.output
+if os.path.isfile(output_dlib): os.remove(output_dlib)
 con = sqlite3.connect(output_dlib)
 cursor = con.cursor()
 cursor.execute('''CREATE TABLE metadata( Key string not null, Value string not null )''')
 cursor.execute("INSERT INTO metadata (Key, Value) VALUES ('version', '0.1.14')")
-new_df.to_sql('entries', con, if_exists='replace')
+new_df.to_sql('entries', con, if_exists='replace', index=False)
 con.commit()
 con.close()
